@@ -1,0 +1,21 @@
+apply plugin: 'java'
+
+sourceCompatibility = '1.8'
+targetCompatibility = '1.8'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation files('libs/slog_java.jar')
+    testImplementation 'junit:junit:4.13.2'
+}
+
+test {
+    // Set java.library.path so System.loadLibrary("slog_jni") finds libslog_jni.so.
+    // Set LD_LIBRARY_PATH so the dynamic linker finds the dependent slog C++ .so files.
+    def nativeDir = file("${projectDir}/libs/native").absolutePath
+    systemProperty 'java.library.path', nativeDir
+    environment 'LD_LIBRARY_PATH', nativeDir
+}

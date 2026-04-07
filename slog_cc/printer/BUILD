@@ -1,6 +1,7 @@
 package(default_visibility = [
     "//:__pkg__",
     "//slog_cc:__subpackages__",
+    "//slog_java:__pkg__",
 ])
 
 cc_library(
