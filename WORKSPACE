@@ -40,37 +40,47 @@ cc_library(
     urls = ["https://github.com/google/benchmark/archive/v1.5.2.zip"],
 )
 
-# Importing python_build_standalone archive that will be used as a python
-# interpreter for bazel builds and for pybind11_bazel.
-load("//python_toolchain:fetch_python_build_standalone.bzl", "fetch_python_build_standalone")
+# Importing python_build_standalone archives that will be used as python
+# interpreters for bazel builds.
+load("//python_toolchain:fetch_python_build_standalone.bzl", "fetch_all_python_interpreters")
 
-fetch_python_build_standalone(name = "python_build_standalone")
+# Per-version interpreters: @python_3_8, @python_3_9, @python_3_10
+fetch_all_python_interpreters()
 
-# Register python3 interpreter from python_build_standalone to be used by bazel builds.
+# Register python3 interpreter (3.10) from python_3_10 to be used by bazel builds.
 register_toolchains("//python_toolchain")
 
 ######## Import pybind11 begin ########
 
-http_archive(
-    name = "pybind11_bazel",
-    sha256 = "3dc6435bd41c058453efe102995ef084d0a86b0176fd6a67a6b7100a2e9a940e",
-    strip_prefix = "pybind11_bazel-992381ced716ae12122360b0fbadbc3dda436dbf",
-    urls = ["https://github.com/pybind/pybind11_bazel/archive/992381ced716ae12122360b0fbadbc3dda436dbf.zip"],
-)
-
+# pybind11 2.11.1 — adds Python 3.10 support (was 2.5.0).
+# Custom build_file makes @pybind11//:pybind11 header-only (no hardcoded python_headers dep)
+# so that the multi-version extension macro can inject the right headers per version.
 http_archive(
     name = "pybind11",
-    build_file = "@pybind11_bazel//:pybind11.BUILD",
-    sha256 = "97504db65640570f32d3fdf701c25a340c8643037c3b69aec469c10c93dc8504",
-    strip_prefix = "pybind11-2.5.0",
-    urls = ["https://github.com/pybind/pybind11/archive/v2.5.0.tar.gz"],
+    build_file = "//third_party:pybind11.BUILD",
+    sha256 = "d475978da0cdc2d43b73f30910786759d593a9d8ee05b1b6846d1eb16c6d2e0c",
+    strip_prefix = "pybind11-2.11.1",
+    urls = ["https://github.com/pybind/pybind11/archive/v2.11.1.tar.gz"],
 )
 
-load("@pybind11_bazel//:python_configure.bzl", "python_configure")
+load("//python_toolchain:python_headers_configure.bzl", "python_headers_configure")
 
-python_configure(
-    name = "local_config_python",
-    python_interpreter_target = "@python_build_standalone//:python/install/bin/python3.8",
+# Per-version configs used by the multi-version wheel build in pkg_slog_py_wheel.
+# Uses a custom repository rule (python_headers_configure) that calls sysconfig instead of
+# distutils.sysconfig, avoiding deprecation-warning-as-error failures on Python 3.10+.
+python_headers_configure(
+    name = "local_config_python_3_8",
+    python_interpreter_target = "@python_3_8//:python/install/bin/python3.8",
+)
+
+python_headers_configure(
+    name = "local_config_python_3_9",
+    python_interpreter_target = "@python_3_9//:python/install/bin/python3.9",
+)
+
+python_headers_configure(
+    name = "local_config_python_3_10",
+    python_interpreter_target = "@python_3_10//:python/install/bin/python3.10",
 )
 
 ######## Import pybind11 end ########

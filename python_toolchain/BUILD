@@ -2,8 +2,8 @@ load("@bazel_tools//tools/python:toolchain.bzl", "py_runtime_pair")
 
 py_runtime(
     name = "python_runtime",
-    files = ["@python_build_standalone//:files"],
-    interpreter = "@python_build_standalone//:interpreter",
+    files = ["@python_3_10//:files"],
+    interpreter = "@python_3_10//:interpreter",
     python_version = "PY3",
 )
 

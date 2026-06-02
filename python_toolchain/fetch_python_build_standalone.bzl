@@ -1,7 +1,9 @@
+load("//python_toolchain:python_versions.bzl", "PYTHON_VERSIONS")
+
 def _fetch_python_build_standalone_impl(repository_ctx):
     repository_ctx.download(
-        url = ["https://github.com/indygreg/python-build-standalone/releases/download/20210228/cpython-3.8.8-x86_64-unknown-linux-gnu-pgo+lto-20210228T1503.tar.zst"],
-        sha256 = "74c9067b363758e501434a02af87047de46085148e673547214526da6e2b2155",
+        url = [repository_ctx.attr.url],
+        sha256 = repository_ctx.attr.sha256,
         output = "python.tar.zst",
     )
 
@@ -17,6 +19,7 @@ def _fetch_python_build_standalone_impl(repository_ctx):
     repository_ctx.delete("python.tar")
     repository_ctx.delete("python.tar.zst")
 
+    bin_path = repository_ctx.attr.bin_path
     repository_ctx.file("BUILD.bazel", """
 package(default_visibility = ["//visibility:public"])
 filegroup(
@@ -25,15 +28,29 @@ filegroup(
 )
 filegroup(
     name = "interpreter",
-    srcs = ["python/install/bin/python3.8"],
+    srcs = ["{bin_path}"],
 )
 sh_binary(
     name = "foo",
-    srcs = ["python/install/bin/python3.8"],
+    srcs = ["{bin_path}"],
 )
-""")
+""".format(bin_path = bin_path))
 
-fetch_python_build_standalone = repository_rule(
+_fetch_python_build_standalone = repository_rule(
     implementation = _fetch_python_build_standalone_impl,
-    attrs = {},
+    attrs = {
+        "url": attr.string(mandatory = True),
+        "sha256": attr.string(mandatory = True),
+        "bin_path": attr.string(mandatory = True),
+    },
 )
+
+def fetch_all_python_interpreters():
+    """Fetches all supported CPython versions as @python_3_8, @python_3_9, @python_3_10."""
+    for version_key, info in PYTHON_VERSIONS.items():
+        _fetch_python_build_standalone(
+            name = "python_" + version_key,
+            url = info["url"],
+            sha256 = info["sha256"],
+            bin_path = info["bin_path"],
+        )

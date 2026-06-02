@@ -1,6 +1,8 @@
-load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("//slog_py:pybind_multi_version.bzl", "pybind_multi_version_extension")
 
-pybind_extension(
+# Multi-version .so targets for wheel packaging.
+# Produces slog_pybind_cp38.so, slog_pybind_cp39.so, slog_pybind_cp310.so.
+pybind_multi_version_extension(
     name = "slog_pybind",
     srcs = ["slog_pybind.cc"],
 
@@ -18,27 +20,32 @@ pybind_extension(
         "-Wl,-rpath=$$ORIGIN/../../com_lyft_avsoftware/_solib_local/",
         "-Wl,-rpath=$$ORIGIN/../../__main__/_solib_k8/",
     ],
-
-    # The slog_pybind.so library has to be linked dynamically because it
-    # depends on `//slog_cc/context` that has a singleton. Given the library
-    # has a singleton it must be linked dynamically and be shared across all
-    # units that import it. E.g. a user can import `:slog_py` and create slog
-    # events in their code and to handle them they can implement their own
-    # subscriber in C++ with python bindings, so both emitting slog events and
-    # subscriber must use the *same* context binary code otherwise they will
-    # act like different programs despite being run under the same thread id.
-    linkstatic = False,
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//pkg_slog_py_wheel:__pkg__",
+    ],
     deps = [
         "//slog_cc/buffer:buffer_cc",
         "//slog_cc/events:events_cc",
     ],
 )
 
+# Rename the cp310 .so to the canonical name that slog.py imports at runtime.
+# (The registered py_test toolchain runs Python 3.10.)
+genrule(
+    name = "slog_pybind_so",
+    srcs = [":slog_pybind_cp310.so"],
+    outs = ["slog_pybind.so"],
+    cmd = "cp $< $@",
+)
+
 py_library(
     name = "slog_py",
     srcs = ["slog.py"],
-    data = [":slog_pybind.so"],
+    data = [
+        ":slog_pybind_so",        # renamed to slog_pybind.so for Python import
+        ":slog_pybind_cp310.so",  # pulls transitive C++ shared libs into runfiles
+    ],
     visibility = [
         "//:__pkg__",
         "//pkg_slog_py_wheel:__pkg__",

@@ -1,16 +1,58 @@
+load("//python_toolchain:python_versions.bzl", "PYTHON_VERSIONS")
+
 # Packages python target into a .whl file and uploads to Artifactory.
-# TODO(vsbus): Use OSS macro or refactor to a more generic one.
-def pkg_py(name, libs, version):
+
+def pkg_py(name, libs, version, python_version = "3_8"):
+    """Build and publish a wheel for a single Python version.
+
+    Args:
+        name: wheel package name (also the PyPI package name)
+        libs: list of py_library targets to bundle
+        version: wheel version string
+        python_version: key from PYTHON_VERSIONS, e.g. "3_8", "3_9", "3_10"
+    """
+    # "3_8" -> "cp38", "3_10" -> "cp310"
+    cp_tag = "cp" + python_version.replace("_", "")
+
     pkg_py_tar(
-        name = name + "_tar",
+        name = name + "_tar_" + cp_tag,
         data = libs,
         pkg_name = name,
         version = version,
+        python_version = python_version,
+        cp_tag = cp_tag,
+        python_interpreter = "@python_{version_key}//:interpreter".format(version_key = python_version),
     )
 
     publish_pkg_py(
+        name = name + "_" + cp_tag,
+        dist_tar = name + "_tar_" + cp_tag,
+    )
+
+def pkg_py_all_versions(name, libs, version):
+    """Build and publish wheels for all supported Python versions.
+
+    Creates individual targets <name>_cp38, <name>_cp39, <name>_cp310
+    and an aggregate filegroup <name> that depends on all of them.
+
+    Expects pybind_multi_version_extension targets at //slog_py:slog_pybind_<cp_tag>.so.
+    """
+    publish_targets = []
+    for version_key in PYTHON_VERSIONS:
+        cp_tag = "cp" + version_key.replace("_", "")
+        # Include the version-specific .so so the wheel script can rename it to slog_pybind.so.
+        versioned_libs = libs + ["//slog_py:slog_pybind_{cp_tag}.so".format(cp_tag = cp_tag)]
+        pkg_py(
+            name = name,
+            libs = versioned_libs,
+            version = version,
+            python_version = version_key,
+        )
+        publish_targets.append(":{name}_{cp_tag}".format(name = name, cp_tag = cp_tag))
+
+    native.filegroup(
         name = name,
-        dist_tar = name + "_tar",
+        srcs = publish_targets,
     )
 
 _SETUP_PY_TEMPLATE = """
@@ -21,7 +63,11 @@ class bdist_wheel(_bdist_wheel):
     def finalize_options(self):
         _bdist_wheel.finalize_options(self)
         self.root_is_pure = False
+        self.plat_name_supplied = True
         self.plat_name = "linux_x86_64"
+
+    def get_tag(self):
+        return "{cp_tag}", "{cp_tag}", "linux_x86_64"
 
 setup(
     name = "{name}",
@@ -30,6 +76,7 @@ setup(
     zip_safe=False,
     include_package_data=True,
     setup_requires=["wheel"],
+    cmdclass={{"bdist_wheel": bdist_wheel}},
 )
 """
 
@@ -40,11 +87,14 @@ rm -rf tmp && mkdir tmp/
 {copy_runfile_commands}
 {copy_symlink_commands}
 touch tmp/README
+# Rename versioned .so to the canonical name the Python module imports.
+if [ -f tmp/slog_py/{versioned_so} ]; then
+  mv tmp/slog_py/{versioned_so} tmp/slog_py/slog_pybind.so
+fi
 echo '{setup_py}' > tmp/setup.py
 echo '{manifest_content}' > tmp/MANIFEST.in
 cd tmp
 {python_cmd} setup.py bdist_wheel > /dev/null
-{rename_wheel}
 tar -chf dist.tar dist/*
 cd ../
 mv ./tmp/dist.tar {output}
@@ -56,8 +106,6 @@ include slog_py/slog_pybind.so
 graft _solib_k8/
 """
 
-# TODO(vsbus): add metadata to pkg to make it available ONLY for Linux and ONLY for Python 3.8+
-
 _PkgPypiInfo = provider(fields = {
     "package": "package name == <exact version> of the package produced",
     "files": "list of File objects that were copied and included in the wheel package",
@@ -65,15 +113,17 @@ _PkgPypiInfo = provider(fields = {
 })
 
 def _pkg_py_tar_impl(ctx):
-    platform = "x86_64-linux-gnu"
-
     files_to_copy, wheel_deps = _distribution_files(
         ctx.attr.data,
     )
 
+    cp_tag = ctx.attr.cp_tag
+    versioned_so = "slog_pybind_{cp_tag}.so".format(cp_tag = cp_tag)
+
     setup_py_content = _SETUP_PY_TEMPLATE.format(
         name = ctx.attr.pkg_name,
         version = ctx.attr.version,
+        cp_tag = cp_tag,
     )
 
     symlinks = [s for s in ctx.runfiles(collect_data = True).symlinks.to_list() if s.target_file.path]
@@ -85,11 +135,19 @@ def _pkg_py_tar_impl(ctx):
     symlink_packages = _get_directories_with_parents([s.path for s in symlinks])
     packages = sorted(dedupe_list(file_packages + symlink_packages))
 
-    python_cmd = "PYTHONPATH=../{} ../external/python_build_standalone/python/install/bin/python3.8 -s".format(ctx.attr._wheel.label.workspace_root)
-    interpreter = ctx.attr._python3_8
-    tools = interpreter.files.to_list() + ctx.attr._wheel.files.to_list()
+    version_key = ctx.attr.python_version  # e.g. "3_8"
+    # Derive the interpreter binary name from the version key: "3_8" -> "python3.8"
+    interpreter_bin = "python" + version_key.replace("_", ".")
+    python_cmd = "PYTHONPATH=../{wheel_workspace} ../external/python_{version_key}/python/install/bin/{interpreter_bin} -s".format(
+        wheel_workspace = ctx.attr._wheel.label.workspace_root,
+        version_key = version_key,
+        interpreter_bin = interpreter_bin,
+    )
 
-    builder_executable = ctx.actions.declare_file("_builder_executable_%s" % ctx.attr.pkg_name)
+    interpreter_files = ctx.attr.python_interpreter.files.to_list()
+    tools = interpreter_files + ctx.attr._wheel.files.to_list()
+
+    builder_executable = ctx.actions.declare_file("_builder_executable_%s_%s" % (ctx.attr.pkg_name, cp_tag))
     ctx.actions.write(
         output = builder_executable,
         content = _DISTRIBUTION_BUILDER_SCRIPT.format(
@@ -99,8 +157,7 @@ def _pkg_py_tar_impl(ctx):
             copy_symlink_commands = copy_symlink_commands,
             setup_py = setup_py_content,
             manifest_content = _MANIFEST_IN,
-            # TODO(vsbus): do we really need rename_wheel?
-            rename_wheel = "",
+            versioned_so = versioned_so,
             output = ctx.outputs.out.path,
         ),
         is_executable = True,
@@ -168,8 +225,7 @@ def _copy_symlinks_into_tmp(symlinks):
     return "\n".join(out_lines)
 
 def dedupe_list(values):
-    """Remove duplicates from a list.
-    """
+    """Remove duplicates from a list."""
     return [k for k in dict(zip(values, values))]
 
 pkg_py_tar = rule(
@@ -177,7 +233,9 @@ pkg_py_tar = rule(
         "data": attr.label_list(mandatory = True),
         "pkg_name": attr.string(mandatory = True),
         "version": attr.string(mandatory = True),
-        "_python3_8": attr.label(default = "@python_build_standalone//:interpreter", allow_files = True),
+        "python_version": attr.string(mandatory = True),
+        "cp_tag": attr.string(mandatory = True),
+        "python_interpreter": attr.label(mandatory = True, allow_files = True),
         "_wheel": attr.label(default = "@python_wheel//:pkg"),
     },
     outputs = {"out": "%{name}.dist.tar"},

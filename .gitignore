@@ -12,3 +12,4 @@ test_import/example_project_java_via_gradle/bin/
 
 # Packaging output
 pkg_slog_java/out/
+pkg_slog_py_wheel/BUILD
