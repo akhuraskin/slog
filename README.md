@@ -12,11 +12,41 @@ Instructions:
 ## Into a Python project built by Bazel
 Requirements:
 * All C++ requirements from above
-* Python 3.8
+* Python 3.8, 3.9, or 3.10
 * pybind11 and pybind11_bazel
 
-Instructions: 
+Instructions:
 * Follow the example from `test_import/example_project_py_via_bazel` directory.
+
+## Building slog_py wheels
+
+Wheels are built with Bazel. The target Python version is selected via a flag; the default is 3.10.
+
+```bash
+# Build wheel for Python 3.10 (default)
+bazelisk build //pkg_slog_py_wheel:slog_py_whl \
+  --define SLOG_RELEASE_VERSION=1.2.3
+
+# Build wheel for a specific Python version
+bazelisk build //pkg_slog_py_wheel:slog_py_whl \
+  --//pkg_slog_py_wheel:whl_build_python_version=3.8 \
+  --define SLOG_RELEASE_VERSION=1.2.3
+```
+
+The output wheel is written to `bazel-bin/pkg_slog_py_wheel/`:
+```
+slog_py-1.2.3-cp310-cp310-manylinux2014_x86_64.whl
+```
+
+To build all three versions:
+```bash
+VERSION=1.2.3
+for v in 3.8 3.9 3.10; do
+  bazelisk build //pkg_slog_py_wheel:slog_py_whl \
+    --//pkg_slog_py_wheel:whl_build_python_version=$v \
+    --define SLOG_RELEASE_VERSION=$VERSION
+done
+```
 
 ## Into a Java project
 Requirements:

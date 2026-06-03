@@ -1,281 +1,187 @@
-# Packages python target into a .whl file and uploads to Artifactory.
-# TODO(vsbus): Use OSS macro or refactor to a more generic one.
-def pkg_py(name, libs, version):
-    pkg_py_tar(
-        name = name + "_tar",
-        data = libs,
-        pkg_name = name,
-        version = version,
+"""Macro to build and publish slog_py wheels for multiple Python versions."""
+
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
+
+# ---------------------------------------------------------------------------
+# Config transition: reads the //pkg_slog_py_wheel:whl_build_python_version
+# flag and forwards it to rules_python's python_version config setting.
+# This makes pybind_extension pick up the correct Python headers/interpreter.
+# ---------------------------------------------------------------------------
+
+def _py_transition_impl(settings, attr):
+    return {
+        "@rules_python//python/config_settings:python_version": settings["//pkg_slog_py_wheel:whl_build_python_version"],
+    }
+
+_py_transition = transition(
+    implementation = _py_transition_impl,
+    inputs = ["//pkg_slog_py_wheel:whl_build_python_version"],
+    outputs = ["@rules_python//python/config_settings:python_version"],
+)
+
+def _py_library_for_wheel_impl(ctx):
+    actual_target = ctx.attr.dep[0]
+    providers = [actual_target[DefaultInfo]]
+    if PyInfo in actual_target:
+        providers.append(actual_target[PyInfo])
+    return providers
+
+py_library_for_wheel = rule(
+    implementation = _py_library_for_wheel_impl,
+    attrs = {
+        "dep": attr.label(cfg = _py_transition),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+# ---------------------------------------------------------------------------
+# install_local_wheel: unpacks a .whl into a directory and exposes it as a
+# PyInfo target. Useful for testing the packaged wheel rather than sources.
+# ---------------------------------------------------------------------------
+
+def _install_local_wheel_impl(ctx):
+    wheel = ctx.file.wheel
+    out_dir = ctx.actions.declare_directory(ctx.label.name + "_extracted")
+
+    ctx.actions.run(
+        outputs = [out_dir],
+        inputs = [wheel],
+        executable = "/usr/bin/unzip",
+        arguments = [
+            "-q",
+            wheel.path,
+            "-d",
+            out_dir.path,
+        ],
+        progress_message = "Extracting wheel %s" % wheel.basename,
+    )
+
+    return [
+        DefaultInfo(
+            files = depset([out_dir]),
+            runfiles = ctx.runfiles([out_dir]),
+        ),
+        PyInfo(
+            transitive_sources = depset([]),
+            imports = depset(["_main/" + out_dir.short_path]),
+        ),
+    ]
+
+install_local_wheel = rule(
+    implementation = _install_local_wheel_impl,
+    attrs = {
+        "wheel": attr.label(
+            allow_single_file = [".whl"],
+            mandatory = True,
+        ),
+    },
+    provides = [PyInfo],
+)
+
+# ---------------------------------------------------------------------------
+# py_distribution_bundle: creates wheel + local-install + publish targets.
+#
+# For the given <name> the macro produces:
+#   <name>                   py_library (public, for use in bazel deps)
+#   <name>_for_wheel         py_library with Python version transition applied
+#   <name>_whl_package       py_package collecting all transitive sources
+#   <name>_whl               the .whl file
+#   <name>_whl_local_package installed wheel as a PyInfo target (for tests)
+#   <name>_publish           bazel run target: twine upload to Artifactory
+#
+# Build a wheel for a specific Python version:
+#   bazel build :<name>_whl --//pkg_slog_py_wheel:whl_build_python_version=3.8
+#     --define SLOG_RELEASE_VERSION=1.2.3
+#
+# Publish:
+#   bazel run :<name>_publish --//pkg_slog_py_wheel:whl_build_python_version=3.9
+#     --define SLOG_RELEASE_VERSION=1.2.3
+# ---------------------------------------------------------------------------
+
+def py_distribution_bundle(name, deps, pip_requires = []):
+    native.py_library(
+        name = name,
+        deps = deps,
+        visibility = ["//visibility:public"],
+    )
+
+    py_library_for_wheel(
+        name = name + "_for_wheel",
+        dep = ":" + name,
+    )
+
+    py_package(
+        name = name + "_whl_package",
+        deps = [":" + name + "_for_wheel"],
+    )
+
+    tag_map = {}
+    for py_version in range(8, 20):
+        setting_name = name + "_v3" + str(py_version)
+        native.config_setting(
+            name = setting_name,
+            flag_values = {"//pkg_slog_py_wheel:whl_build_python_version": "3." + str(py_version)},
+        )
+        tag_map[":" + setting_name] = "cp3" + str(py_version)
+
+    py_wheel(
+        name = name + "_whl",
+        distribution = name,
+        version = "$(SLOG_RELEASE_VERSION)",
+        python_tag = select(tag_map),
+        abi = select(tag_map),
+        platform = "manylinux2014_x86_64",
+        deps = [":" + name + "_whl_package"],
+        requires = pip_requires,
+    )
+
+    install_local_wheel(
+        name = name + "_whl_local_package",
+        wheel = ":" + name + "_whl",
+        visibility = ["//visibility:public"],
     )
 
     publish_pkg_py(
-        name = name,
-        dist_tar = name + "_tar",
+        name = name + "_publish",
+        wheel = ":" + name + "_whl",
     )
 
-_SETUP_PY_TEMPLATE = """
-from setuptools import setup, find_packages
-from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
-
-class bdist_wheel(_bdist_wheel):
-    def finalize_options(self):
-        _bdist_wheel.finalize_options(self)
-        self.root_is_pure = False
-        self.plat_name = "linux_x86_64"
-
-setup(
-    name = "{name}",
-    version = "{version}",
-    packages=find_packages(),
-    zip_safe=False,
-    include_package_data=True,
-    setup_requires=["wheel"],
-)
-"""
-
-_DISTRIBUTION_BUILDER_SCRIPT = """
-set -e
-rm -rf tmp && mkdir tmp/
-{init_directories}
-{copy_runfile_commands}
-{copy_symlink_commands}
-touch tmp/README
-echo '{setup_py}' > tmp/setup.py
-echo '{manifest_content}' > tmp/MANIFEST.in
-cd tmp
-{python_cmd} setup.py bdist_wheel > /dev/null
-{rename_wheel}
-tar -chf dist.tar dist/*
-cd ../
-mv ./tmp/dist.tar {output}
-"""
-
-# TODO(vsbus): automate manifest in by including everything from files returned by distribution() func
-_MANIFEST_IN = """
-include slog_py/slog_pybind.so
-graft _solib_k8/
-"""
-
-# TODO(vsbus): add metadata to pkg to make it available ONLY for Linux and ONLY for Python 3.8+
-
-_PkgPypiInfo = provider(fields = {
-    "package": "package name == <exact version> of the package produced",
-    "files": "list of File objects that were copied and included in the wheel package",
-    "dist_tar": "the File corresponding to the package distribution tar",
-})
-
-def _pkg_py_tar_impl(ctx):
-    platform = "x86_64-linux-gnu"
-
-    files_to_copy, wheel_deps = _distribution_files(
-        ctx.attr.data,
-    )
-
-    setup_py_content = _SETUP_PY_TEMPLATE.format(
-        name = ctx.attr.pkg_name,
-        version = ctx.attr.version,
-    )
-
-    symlinks = [s for s in ctx.runfiles(collect_data = True).symlinks.to_list() if s.target_file.path]
-    symlink_files = [s.target_file for s in symlinks]
-
-    copy_runfile_commands = _copy_files_into_tmp(files_to_copy)
-    copy_symlink_commands = _copy_symlinks_into_tmp(symlinks)
-    file_packages = _get_directories_with_parents([f.short_path for f in files_to_copy])
-    symlink_packages = _get_directories_with_parents([s.path for s in symlinks])
-    packages = sorted(dedupe_list(file_packages + symlink_packages))
-
-    python_cmd = "PYTHONPATH=../{} ../external/python_build_standalone/python/install/bin/python3.8 -s".format(ctx.attr._wheel.label.workspace_root)
-    interpreter = ctx.attr._python3_8
-    tools = interpreter.files.to_list() + ctx.attr._wheel.files.to_list()
-
-    builder_executable = ctx.actions.declare_file("_builder_executable_%s" % ctx.attr.pkg_name)
-    ctx.actions.write(
-        output = builder_executable,
-        content = _DISTRIBUTION_BUILDER_SCRIPT.format(
-            python_cmd = python_cmd,
-            init_directories = _init_pypi_paths(packages),
-            copy_runfile_commands = copy_runfile_commands,
-            copy_symlink_commands = copy_symlink_commands,
-            setup_py = setup_py_content,
-            manifest_content = _MANIFEST_IN,
-            # TODO(vsbus): do we really need rename_wheel?
-            rename_wheel = "",
-            output = ctx.outputs.out.path,
-        ),
-        is_executable = True,
-    )
-    ctx.actions.run_shell(
-        inputs = files_to_copy + symlink_files + [builder_executable, ctx.info_file, ctx.version_file],
-        tools = tools,
-        outputs = [ctx.outputs.out],
-        command = builder_executable.path,
-        use_default_shell_env = True,
-    )
-    return [_PkgPypiInfo(
-        package = "{}=={}".format(ctx.attr.pkg_name, ctx.attr.version),
-        files = files_to_copy + [s.target_file for s in symlinks],
-        dist_tar = ctx.outputs.out,
-    )]
-
-def _get_directories_with_parents(paths):
-    packages = []
-    for path in paths:
-        tokens = path.split("/")
-        for prefix_len in range(1, len(tokens)):
-            packages.append("/".join(tokens[:prefix_len]))
-    return sorted(dedupe_list(packages))
-
-def _distribution_files(libs):
-    files = []
-    wheels_used = {}
-    for lib in libs:
-        candidates = lib[DefaultInfo].default_runfiles.files.to_list()
-        files += candidates
-    return sorted(dedupe_list(files)), wheels_used.keys()
-
-def _init_pypi_paths(paths):
-    out_lines = []
-    for path in paths:
-        out_lines += [
-            "mkdir -p tmp/{path}".format(path = path),
-            "touch tmp/{path}/__init__.py".format(path = path),
-        ]
-    return "\n".join(out_lines)
-
-def _copy_files_into_tmp(files):
-    out_lines = []
-    for file in files:
-        if file.short_path.startswith(".."):
-            continue
-        out_lines += [
-            "cp -f {src} tmp/{dest}".format(
-                src = file.path,
-                dest = "/".join(file.short_path.split("/")[:-1]),
-            ),
-        ]
-    return "\n".join(out_lines)
-
-def _copy_symlinks_into_tmp(symlinks):
-    out_lines = []
-    for symlink in symlinks:
-        out_lines += [
-            "if [ ! -e tmp/{dest} ]; then cp {src} tmp/{dest} ; fi".format(
-                src = symlink.target_file.path,
-                dest = symlink.path,
-            ),
-        ]
-    return "\n".join(out_lines)
-
-def dedupe_list(values):
-    """Remove duplicates from a list.
-    """
-    return [k for k in dict(zip(values, values))]
-
-pkg_py_tar = rule(
-    attrs = {
-        "data": attr.label_list(mandatory = True),
-        "pkg_name": attr.string(mandatory = True),
-        "version": attr.string(mandatory = True),
-        "_python3_8": attr.label(default = "@python_build_standalone//:interpreter", allow_files = True),
-        "_wheel": attr.label(default = "@python_wheel//:pkg"),
-    },
-    outputs = {"out": "%{name}.dist.tar"},
-    implementation = _pkg_py_tar_impl,
-)
-
-def publish_pkg_py(name, dist_tar):
-    publish_pkg_py_executable_name = "publish_pypi_executable_%s" % name
-    artifact_metadata_name = "%s_artifact_metadata" % name
-
-    publish_pkg_py_executable(
-        name = publish_pkg_py_executable_name,
-        dist_tar = dist_tar,
-    )
-
-    run_publish_executable(
-        name = name,
-        publish_script = (":%s" % publish_pkg_py_executable_name),
-        src = dist_tar,
-    )
+# ---------------------------------------------------------------------------
+# Artifactory publish (twine upload)
+# ---------------------------------------------------------------------------
 
 _PUBLISH_PYPI_SCRIPT = """
 set -o errexit
-TMP=$(mktemp -d -t pkg_py-XXXXXXXXXX)
-if [[ "{dist_tar_path}" == *.gz ]] ; then
-  tar -xzf {dist_tar_path} -C $TMP
-else
-  tar -xf {dist_tar_path} -C $TMP
-fi
-twine upload {pkg_py_repo_args} $TMP/dist/*
-rm -rf $TMP
+twine upload {pkg_py_repo_args} {wheel_path}
 """
 
 def _publish_pkg_py_executable_impl(ctx):
-    publish_pkg_py_script = _PUBLISH_PYPI_SCRIPT.format(
-        dist_tar_path = ctx.files.dist_tar[0].path,
+    """Create a script to upload the .whl file to Artifactory via twine."""
+    wheel_file = ctx.files.wheel[0]
+    publish_script = _PUBLISH_PYPI_SCRIPT.format(
         pkg_py_repo_args = "-r nexus",
+        wheel_path = wheel_file.path,
     )
     ctx.actions.write(
-        content = publish_pkg_py_script,
+        content = publish_script,
         output = ctx.outputs.out,
         is_executable = True,
     )
     return [DefaultInfo(executable = ctx.outputs.out)]
 
-"""Create a script to unpack a tarball and upload the contents.
-This makes an assumption that the the unpacked tarball stores the
-*.whl file in a dist directory.
-"""
 publish_pkg_py_executable = rule(
     attrs = {
-        "dist_tar": attr.label(mandatory = True, allow_single_file = [".tar", ".tar.gz"]),
+        "wheel": attr.label(mandatory = True, allow_single_file = [".whl"]),
     },
     executable = True,
     outputs = {"out": "%{name}.sh"},
     implementation = _publish_pkg_py_executable_impl,
 )
 
-def _run_publish_executable_impl(ctx):
-    inputs = ctx.files.src
-
-    to_execute = "{script_path} > {output_path}".format(
-        script_path = ctx.executable.publish_script.path,
-        output_path = ctx.outputs.out.path,
+def publish_pkg_py(name, wheel):
+    publish_pkg_py_executable(
+        name = name,
+        wheel = wheel,
     )
-    progress_message = "Pushing artifact: %s" % ctx.label.name
-    metadata_files = []
-
-    ctx.actions.run_shell(
-        inputs = inputs,
-        tools = [ctx.executable.publish_script],
-        outputs = [ctx.outputs.out],
-        command = to_execute,
-        progress_message = progress_message,
-    )
-
-    return [
-        DefaultInfo(files = depset(ctx.files.src + [ctx.outputs.out])),
-        OutputGroupInfo(metadata = depset(metadata_files)),
-    ]
-
-run_publish_executable = rule(
-    attrs = {
-        "publish_script": attr.label(
-            mandatory = True,
-            allow_files = True,
-            executable = True,
-            cfg = "target",
-            doc = "a script that will publish the artifact",
-        ),
-        "src": attr.label(
-            mandatory = True,
-            allow_files = True,
-            doc = "the source files that were used to build the package",
-        ),
-    },
-    outputs = {
-        "out": "%{name}_publish_output",
-    },
-    implementation = _run_publish_executable_impl,
-)
