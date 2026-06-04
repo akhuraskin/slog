@@ -37,7 +37,10 @@ pybind_extension(
 
 py_library(
     name = "slog_py",
-    srcs = ["slog.py"],
+    srcs = [
+        "__init__.py",
+        "slog.py",
+    ],
     data = [":slog_pybind.so"],
     visibility = [
         "//:__pkg__",
