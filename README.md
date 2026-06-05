@@ -38,15 +38,36 @@ The output wheel is written to `bazel-bin/pkg_slog_py_wheel/`:
 slog_py-1.2.3-cp310-cp310-manylinux2014_x86_64.whl
 ```
 
-To build all three versions:
+## Publishing slog_py wheels to Artifactory
+
+Use `pkg_slog_py_wheel/publish_wheels.sh` to build all three Python versions and upload them in one step.
+
+Prerequisites:
+* `bazelisk` on `PATH`
+* `twine` (`pip install twine`)
+* Credentials: set `ARTIFACTORY_USER` and `ARTIFACTORY_TOKEN`, or add an entry for `na1-artifactory.stargate.toyota` to `~/.netrc`
+
 ```bash
-VERSION=1.2.3
-for v in 3.8 3.9 3.10; do
-  bazelisk build //pkg_slog_py_wheel:slog_py_whl \
-    --//pkg_slog_py_wheel:whl_build_python_version=$v \
-    --define SLOG_RELEASE_VERSION=$VERSION
-done
+# Publish to the ephemeral dev repo (default)
+pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3
+
+# Publish to the production repo
+pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3 --prod
+
+# Build only, skip upload
+pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3 --dry-run
 ```
+
+The version can also be set via the `SLOG_RELEASE_VERSION` environment variable instead of `--version`.
+
+Resulting artifact paths (dev):
+```
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp38-cp38-manylinux2014_x86_64.whl
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp39-cp39-manylinux2014_x86_64.whl
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp310-cp310-manylinux2014_x86_64.whl
+```
+
+Use `--prod` to publish to `aadadas-us-pypi-internal-dev-local` instead.
 
 ## Into a Java project
 Requirements:
