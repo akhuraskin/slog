@@ -18,56 +18,62 @@ Requirements:
 Instructions:
 * Follow the example from `test_import/example_project_py_via_bazel` directory.
 
-## Building slog_py wheels
-
-Wheels are built with Bazel. The target Python version is selected via a flag; the default is 3.10.
-
-```bash
-# Build wheel for Python 3.10 (default)
-bazelisk build //pkg_slog_py_wheel:slog_py_whl \
-  --define SLOG_RELEASE_VERSION=1.2.3
-
-# Build wheel for a specific Python version
-bazelisk build //pkg_slog_py_wheel:slog_py_whl \
-  --//pkg_slog_py_wheel:whl_build_python_version=3.8 \
-  --define SLOG_RELEASE_VERSION=1.2.3
-```
-
-The output wheel is written to `bazel-bin/pkg_slog_py_wheel/`:
-```
-slog_py-1.2.3-cp310-cp310-manylinux2014_x86_64.whl
-```
-
 ## Publishing slog_py wheels to Artifactory
 
-Use `pkg_slog_py_wheel/publish_wheels.sh` to build all three Python versions and upload them in one step.
+`pkg_slog_py_wheel/publish_wheels.sh` builds wheels for Python 3.8, 3.9, and 3.10 and uploads them (see [Building a single wheel manually](#building-a-single-wheel-manually) for low-level Bazel commands). The version is read automatically from the `VERSION` file.
 
 Prerequisites:
 * `bazelisk` on `PATH`
 * `twine` (`pip install twine`)
-* Credentials: set `ARTIFACTORY_USER` and `ARTIFACTORY_TOKEN`, or add an entry for `na1-artifactory.stargate.toyota` to `~/.netrc`
+* Credentials — one of:
+  * Set `ARTIFACTORY_USER` and `ARTIFACTORY_TOKEN` environment variables, or
+  * Add an entry to `~/.netrc`:
+    ```
+    machine na1-artifactory.stargate.toyota
+    login <username>
+    password <token>
+    ```
+    `~/.netrc` must be owner-readable only: `chmod 600 ~/.netrc`
 
 ```bash
 # Publish to the ephemeral dev repo (default)
-pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3
+pkg_slog_py_wheel/publish_wheels.sh
 
 # Publish to the production repo
-pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3 --prod
+pkg_slog_py_wheel/publish_wheels.sh --prod
 
 # Build only, skip upload
-pkg_slog_py_wheel/publish_wheels.sh --version 1.2.3 --dry-run
+pkg_slog_py_wheel/publish_wheels.sh --dry-run
 ```
-
-The version can also be set via the `SLOG_RELEASE_VERSION` environment variable instead of `--version`.
 
 Resulting artifact paths (dev):
 ```
-https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp38-cp38-manylinux2014_x86_64.whl
-https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp39-cp39-manylinux2014_x86_64.whl
-https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/1.2.3/slog_py-1.2.3-cp310-cp310-manylinux2014_x86_64.whl
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/0.0.1/slog_py-0.0.1-cp38-cp38-manylinux2014_x86_64.whl
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/0.0.1/slog_py-0.0.1-cp39-cp39-manylinux2014_x86_64.whl
+https://na1-artifactory.stargate.toyota/artifactory/aadadas-us-pypi-internal-ephemeral-dev-local/slog-py/0.0.1/slog_py-0.0.1-cp310-cp310-manylinux2014_x86_64.whl
 ```
 
 Use `--prod` to publish to `aadadas-us-pypi-internal-dev-local` instead.
+
+### Building a single wheel manually
+
+The version is passed via `--define`. The target Python version is selected via a flag; the default is 3.10.
+
+```bash
+# Build wheel for Python 3.10 (default)
+bazelisk build //pkg_slog_py_wheel:slog_py_whl \
+  --define SLOG_RELEASE_VERSION=$(cat VERSION)
+
+# Build wheel for a specific Python version
+bazelisk build //pkg_slog_py_wheel:slog_py_whl \
+  --//pkg_slog_py_wheel:whl_build_python_version=3.8 \
+  --define SLOG_RELEASE_VERSION=$(cat VERSION)
+```
+
+The output wheel is written to `bazel-bin/pkg_slog_py_wheel/`:
+```
+slog_py-0.0.1-cp310-cp310-manylinux2014_x86_64.whl
+```
 
 ## Into a Java project
 Requirements:

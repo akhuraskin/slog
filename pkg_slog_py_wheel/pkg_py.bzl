@@ -93,11 +93,9 @@ install_local_wheel = rule(
 #
 # Build a wheel for a specific Python version:
 #   bazel build :<name>_whl --//pkg_slog_py_wheel:whl_build_python_version=3.8
-#     --define SLOG_RELEASE_VERSION=1.2.3
+#     --define SLOG_RELEASE_VERSION=$(cat VERSION)
 #
-# Publish:
-#   bazel run :<name>_publish --//pkg_slog_py_wheel:whl_build_python_version=3.9
-#     --define SLOG_RELEASE_VERSION=1.2.3
+# Publish via publish_wheels.sh — version is read automatically from the VERSION file.
 # ---------------------------------------------------------------------------
 
 def py_distribution_bundle(name, deps, pip_requires = []):
